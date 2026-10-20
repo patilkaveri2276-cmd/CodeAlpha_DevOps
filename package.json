@@ -1,0 +1,14 @@
+{
+  "name": "azure-devops-ci-cd-sample",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sample Node.js web app for Azure Pipelines CI/CD demo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node -e \"console.log('No automated tests configured for this sample app.')\""
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

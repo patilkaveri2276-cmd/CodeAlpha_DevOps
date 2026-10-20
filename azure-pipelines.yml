@@ -1,0 +1,117 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  vmImageName: 'ubuntu-latest'
+  imageRepository: 'sample-webapp'
+  dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
+  tag: '$(Build.BuildId)'
+  azureServiceConnection: 'azure-service-connection'
+  dockerRegistryServiceConnection: 'acr-service-connection'
+  resourceGroup: 'rg-az-pipeline-demo'
+  location: 'eastus'
+  acrName: 'azpipelineacr12345'
+  appServicePlan: 'asp-az-pipeline-demo'
+  webAppName: 'app-az-pipeline-demo-12345'
+
+stages:
+  - stage: Build
+    displayName: 'Build and push container image'
+    jobs:
+      - job: Build
+        displayName: 'Build image'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '20.x'
+            displayName: 'Install Node.js'
+
+          - script: |
+              npm ci --include=dev
+              npm test
+            displayName: 'Install dependencies and run validation'
+
+          - task: Docker@2
+            displayName: 'Build and push image to Azure Container Registry'
+            inputs:
+              command: 'buildAndPush'
+              repository: '$(imageRepository)'
+              dockerfile: '$(dockerfilePath)'
+              containerRegistry: '$(dockerRegistryServiceConnection)'
+              tags: |
+                $(tag)
+                latest
+
+  - stage: Deploy
+    displayName: 'Deploy to Azure App Service'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - deployment: DeployWebApp
+        displayName: 'Deploy web app'
+        environment: 'production'
+        pool:
+          vmImage: $(vmImageName)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Ensure Azure resources exist'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      set -e
+
+                      az group create --name "$(resourceGroup)" --location "$(location)" --output none
+
+                      az acr create \
+                        --resource-group "$(resourceGroup)" \
+                        --name "$(acrName)" \
+                        --sku Basic \
+                        --admin-enabled true \
+                        --output none || true
+
+                      az appservice plan create \
+                        --name "$(appServicePlan)" \
+                        --resource-group "$(resourceGroup)" \
+                        --location "$(location)" \
+                        --sku B1 \
+                        --is-linux \
+                        --output none || true
+
+                      az webapp create \
+                        --resource-group "$(resourceGroup)" \
+                        --plan "$(appServicePlan)" \
+                        --name "$(webAppName)" \
+                        --deployment-container-image-name "$(acrName).azurecr.io/$(imageRepository):latest" \
+                        --output none || true
+
+                - task: AzureWebAppContainer@1
+                  displayName: 'Deploy container image to App Service'
+                  inputs:
+                    azureSubscription: '$(azureServiceConnection)'
+                    appName: '$(webAppName)'
+                    containers: |
+                      $(acrName).azurecr.io/$(imageRepository):$(tag)
+
+                - script: |
+                    echo "Running smoke test against deployed app"
+                    curl -fsSL "https://$(webAppName).azurewebsites.net/health"
+                  displayName: 'Verify deployment health'
+
+                - script: |
+                    echo "Deployment finished successfully."
+                    echo "Application URL: https://$(webAppName).azurewebsites.net"
+                  displayName: 'Summarize deployment status'
